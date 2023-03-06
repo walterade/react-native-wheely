@@ -16,9 +16,9 @@ export default StyleSheet.create({
     flex: 1,
   },
   option: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
+    //alignItems: 'center',
+    //justifyContent: 'center',
+    //paddingHorizontal: 16,
     zIndex: 100,
   },
 });

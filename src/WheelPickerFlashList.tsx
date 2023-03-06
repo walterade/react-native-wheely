@@ -4,20 +4,21 @@ import {
   TextStyle,
   NativeSyntheticEvent,
   NativeScrollEvent,
-  Animated,
   ViewStyle,
   View,
   ViewProps,
-  FlatListProps,
-  FlatList,
+  Animated,
 } from 'react-native';
 import styles from './WheelPicker.styles';
-import WheelPickerItem, { ItemInformation } from './WheelPickerItem';
+import WheelPickerItemFlashList, { ItemInformation } from './WheelPickerItemFlashList';
 import _ from 'lodash';
 import DeepDiff from 'deep-diff';
+import { FlashList, FlashListProps, CellContainer } from '@shopify/flash-list';
 import AnimationManager from './AnimationManager';
 
 const d = DeepDiff;
+const AnimatedFlashList = Animated.createAnimatedComponent(FlashList);
+const AnimatedCellContainer = Animated.createAnimatedComponent(CellContainer);
 
 interface Props {
   selectedIndex: number;
@@ -34,9 +35,8 @@ interface Props {
   translateFunction?: (x: number, info: ItemInformation) => number;
   rotationFunction?: (x: number, info: ItemInformation) => number;
   opacityFunction?: (x: number, info: ItemInformation) => number;
-  visibleRest: number,
   decelerationRate?: 'normal' | 'fast' | number;
-  flatListProps?: Omit<FlatListProps<unknown>, 'data' | 'renderItem'>;
+  flashListProps?: Omit<FlashListProps<unknown>, 'data' | 'renderItem'>;
   renderItem?: (info: any) => any;
   onScroll?: (event: NativeSyntheticEvent<NativeScrollEvent>) => any;
   keyExtractor?: (item: any, index: number) => string;
@@ -47,7 +47,7 @@ interface Props {
 
 type WheelPickerRef = {
   setSelectedIndex: (index: number, animated: boolean) => void,
-  current: FlatList | null
+  current: FlashList<any> | null
 }
 
 /* eslint-disable react/display-name */
@@ -65,10 +65,9 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
   translateFunction = () => 0,
   rotationFunction = (x: number) => 1 - Math.pow(1 / 2, x),
   opacityFunction = (x: number) => Math.pow(1 / 3, x),
-  visibleRest = 2,
   decelerationRate = 'fast',
   containerProps = {},
-  flatListProps = {},
+  flashListProps = {},
   renderItem,
   onScroll,
   keyExtractor = (item: any, index: number) => index.toString(),
@@ -76,13 +75,13 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
   footerPadding = true,
   debug = false,
 }, ref) => {
-  const flatListRef = useRef<FlatList>(null);
+  const flashListRef = useRef<FlashList<any>>(null);
   const [scrollY] = useState(new Animated.Value(0));
   const [_visibleRest, setVisibleRest] = useState(2);
   const [_centeringOffset, setCenteringOffset] = useState(0);
   const data = useRef<any>({}).current;
 
-  const numColumns = flatListProps.numColumns || 1;
+  const numColumns = flashListProps.numColumns || 1;
   const containerHeight = '100%'; //(1 + _visibleRest * 2) * itemHeight;
   const paddedOptions = useMemo(() => {
     if (!headerPadding && !footerPadding) return options;
@@ -123,7 +122,7 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
 
       setCenteringOffset(off);
     }
-    if (flatListProps.onLayout) flatListProps.onLayout(event);
+    if (flashListProps.onLayout) flashListProps.onLayout(event);
   };
 
   const currentScrollIndex = useMemo(
@@ -144,7 +143,7 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
     const actualIndex = Math.floor(index / numColumns) - _visibleRest;
     if (actualIndex < 0 || actualIndex >= Math.floor(options?.length / numColumns)) return false;
 
-    flatListRef.current?.scrollToIndex({
+    flashListRef.current?.scrollToIndex({
       index: actualIndex,
       animated,
     });
@@ -167,7 +166,7 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
   useImperativeHandle(ref, () => ({
     currentScrollIndex,
     setSelectedIndex,
-    current: flatListRef.current
+    current: flashListRef.current
   }));
 
   const PAD = 2;
@@ -193,13 +192,58 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
         return range;
       })(),
     });
-
+    
     return (
-      <Animated.View style={[style, {zIndex, position: 'relative'}]} {...props} pointerEvents={'box-none'} key={index.toString()}>
+      <AnimatedCellContainer 
+        index={index} 
+        style={[style, {zIndex, transform: [{translateY: _centeringOffset}]}]}
+        pointerEvents="box-none"
+        {...props}
+      >
         {children}
-      </Animated.View>
+      </AnimatedCellContainer>
     );
   }, [_visibleRest, _centeringOffset, numColumns]);
+
+  const _renderItem = ({ item: option, index }) => {
+    if (!option) return null;
+    return (
+      <WheelPickerItemFlashList
+        index={index}
+        column={numColumns ? (index % numColumns) : 0}
+        numColumns={numColumns}
+        option={option}
+        style={itemStyle}
+        textStyle={itemTextStyle}
+        height={itemHeight}
+        currentScrollIndex={currentScrollIndex}
+        animationManager={animationManager}
+        visibleRest={_visibleRest}
+        debug={debug}
+      >
+        {renderItem && renderItem({option, index})}
+      </WheelPickerItemFlashList>
+    )
+  };
+
+  const _onScroll = Animated.event(
+    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+    { 
+      useNativeDriver: true,
+      listener: (event: NativeSyntheticEvent<NativeScrollEvent> | any) => {
+        const offsetY = Math.min(itemHeight * (options.length / numColumns - 1), Math.max(event.nativeEvent.contentOffset.y, 0));
+        data.currentIndex = Math.round(offsetY / itemHeight);
+
+        if (onScroll) {
+          event.numItems = options.length;
+          event.itemHeight = itemHeight;
+          event.numColumns = numColumns;
+          event.visibleRest = _visibleRest;
+          onScroll(event);
+        }
+      }
+    },
+);
 
   const animationManager = useRef(new AnimationManager(
     translateFunction,
@@ -227,63 +271,24 @@ const WheelPicker: React.FC<Props> = React.forwardRef<WheelPickerRef, Props>(({
           },
         ]}
       />
-      <Animated.FlatList
-        {...flatListProps}
-        ref={flatListRef}
+      <AnimatedFlashList
+        {...flashListProps}
+        key={_visibleRest}
+        ref={flashListRef}
         onLayout={onLayout}  
-        style={styles.scrollView}
+        //contentContainerStyle={styles.scrollView}
         showsVerticalScrollIndicator={false}
-        onScroll={Animated.event(
-            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-            { 
-              useNativeDriver: true,
-              listener: (event: NativeSyntheticEvent<NativeScrollEvent> | any) => {
-                const offsetY = Math.min(itemHeight * (options.length / numColumns - 1), Math.max(event.nativeEvent.contentOffset.y, 0));
-                data.currentIndex = Math.round(offsetY / itemHeight);
-
-                if (onScroll) {
-                  event.numItems = options.length;
-                  event.itemHeight = itemHeight;
-                  event.numColumns = numColumns;
-                  event.visibleRest = _visibleRest;
-                  onScroll(event);
-                }
-              }
-            },
-        )}
+        onScroll={_onScroll}
         CellRendererComponent={renderCell}
         onMomentumScrollEnd={handleMomentumScrollEnd}
         snapToInterval={itemHeight}
         //snapToOffsets={offsets}
         decelerationRate={decelerationRate}
         initialScrollIndex={(options?.length > 0 && selectedIndex >= 0 && selectedIndex <= (options.length - 1)) ? selectedIndex : null}
-        getItemLayout={(data, index) => ({
-          length: itemHeight,
-          offset: itemHeight * index,
-          index,
-        })}
+        estimatedItemSize={itemHeight}
         data={paddedOptions}
         keyExtractor={keyExtractor}
-        renderItem={({ item: option, index }) => {
-          if (!option) return null;
-          return (
-            <WheelPickerItem
-              key={`option-${index}`}
-              index={index}
-              column={numColumns ? (index % numColumns) : 0}
-              numColumns={numColumns}
-              option={option}
-              style={itemStyle}
-              textStyle={itemTextStyle}
-              height={itemHeight}
-              currentScrollIndex={currentScrollIndex}
-              animationManager={animationManager}
-              visibleRest={_visibleRest}
-              debug={debug}
-            >
-              {renderItem && renderItem({option, index})}
-            </WheelPickerItem>
-          )}}
+        renderItem={_renderItem}
       />
     </View>
   );
